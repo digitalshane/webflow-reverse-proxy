@@ -21,10 +21,8 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
-    // Load .env file
     dotenvy::dotenv().ok();
 
-    // Your Webflow site URL
     let webflow_url: String = match std::env::var("WEBFLOW_STAGING_URL") {
         Ok(url) => url,
         Err(_) => {
@@ -68,23 +66,19 @@ async fn proxy_handler(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, StatusCode> {
-    // Build the target URL
     let path: &str = uri.path();
     let query: String = uri.query().map(|q: &str| format!("?{}", q)).unwrap_or_default();
     let target_url: String = format!("{}{}{}", state.webflow_url, path, query);
 
     println!("Proxying {} {} -> {}", method, uri, target_url);
 
-    // Convert body to bytes
     let body_bytes: axum::body::Bytes = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(_) => return Err(StatusCode::BAD_REQUEST),
     };
 
-    // Build the proxied request
     let mut req_builder: reqwest::RequestBuilder = state.client.request(method.clone(), &target_url);
 
-    // Forward relevant headers (skip host, connection, etc.)
     for (name, value) in headers.iter() {
         let name_str: String = name.as_str().to_lowercase();
         if !matches!(
@@ -95,12 +89,10 @@ async fn proxy_handler(
         }
     }
 
-    // Add body if present
     if !body_bytes.is_empty() {
         req_builder = req_builder.body(body_bytes);
     }
 
-    // Send the request
     let response: reqwest::Response = match req_builder.send().await {
         Ok(resp) => resp,
         Err(e) => {
@@ -109,14 +101,10 @@ async fn proxy_handler(
         }
     };
 
-    // Build response
     let mut resp_builder: axum::http::response::Builder = Response::builder().status(response.status());
 
-    // Copy response headers
     for (name, value) in response.headers().iter() {
         let name_str: String = name.as_str().to_lowercase();
-        // Skip headers that could cause issues
-        // Note: reqwest auto-decompresses, so we must skip content-encoding
         if !matches!(
             name_str.as_str(),
             "transfer-encoding" | "content-length" | "connection" | "content-encoding"
@@ -125,13 +113,11 @@ async fn proxy_handler(
         }
     }
 
-    // Get response body
     let body_bytes: axum::body::Bytes = match response.bytes().await {
         Ok(bytes) => bytes,
         Err(_) => return Err(StatusCode::BAD_GATEWAY),
     };
 
-    // Modify content if it's HTML (example: inject custom script)
     let content_type: &str = resp_builder
         .headers_ref()
         .and_then(|h: &HeaderMap| h.get("content-type"))
