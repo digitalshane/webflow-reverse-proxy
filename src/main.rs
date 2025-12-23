@@ -1,8 +1,8 @@
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Host, State},
     http::{HeaderMap, StatusCode, Uri},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::any,
     Router,
 };
@@ -12,11 +12,18 @@ use reqwest::Client;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
+#[derive(Clone, PartialEq)]
+enum RedirectMode {
+    Www, 
+    Root,
+}
+
 #[derive(Clone)]
 struct AppState {
     client: Client,
     webflow_url: String,
     prod_url: String,
+    redirect_mode: RedirectMode,
 }
 
 #[tokio::main]
@@ -39,10 +46,24 @@ async fn main() {
         }
     };
 
+    let redirect_mode = match std::env::var("BASE_URL").as_deref() {
+        Ok("www") => RedirectMode::Www,
+        Ok("root") => RedirectMode::Root,
+        Ok(other) => {
+            eprintln!("Error: BASE_URL must be 'www' or 'root', got '{}'", other);
+            std::process::exit(1);
+        }
+        Err(_) => {
+            eprintln!("Error: BASE_URL environment variable is not set (use 'www' or 'root')");
+            std::process::exit(1);
+        }
+    };
+
     let state = AppState {
         client: Client::new(),
         webflow_url,
         prod_url,
+        redirect_mode,
     };
 
     let app: Router = Router::new()
@@ -59,13 +80,43 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+fn check_redirect(host: &str, uri: &Uri, state: &AppState) -> Option<Redirect> {
+    let host_without_port = host.split(':').next().unwrap_or(host);
+    let is_www = host_without_port.starts_with("www.");
+
+    let path = uri.path();
+    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+
+    match (&state.redirect_mode, is_www) {
+        (RedirectMode::Www, false) => {
+            let new_host = format!("www.{}", host_without_port);
+            let redirect_url = format!("https://{}{}{}", new_host, path, query);
+            println!("Redirecting to www: {}", redirect_url);
+            Some(Redirect::permanent(&redirect_url))
+        }
+        (RedirectMode::Root, true) => {
+            let new_host = host_without_port.strip_prefix("www.").unwrap_or(host_without_port);
+            let redirect_url = format!("https://{}{}{}", new_host, path, query);
+            println!("Redirecting to root: {}", redirect_url);
+            Some(Redirect::permanent(&redirect_url))
+        }
+        _ => None,
+    }
+}
+
 async fn proxy_handler(
     State(state): State<Arc<AppState>>,
+    Host(host): Host,
     uri: Uri,
     method: axum::http::Method,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, StatusCode> {
+
+    if let Some(redirect) = check_redirect(&host, &uri, &state) {
+        return Ok(redirect.into_response());
+    }
+
     let path: &str = uri.path();
     let query: String = uri.query().map(|q: &str| format!("?{}", q)).unwrap_or_default();
     let target_url: String = format!("{}{}{}", state.webflow_url, path, query);
@@ -127,7 +178,6 @@ async fn proxy_handler(
     let modified_body: Vec<u8> = if content_type.contains("text/html") {
         let html: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&body_bytes);
 
-        // Replace data-wf-domain attribute value with PROD_URL
         let wf_domain_re: Regex = Regex::new(r#"data-wf-domain="[^"]*""#).unwrap();
         let modified: std::borrow::Cow<'_, str> = wf_domain_re.replace_all(&html, format!(r#"data-wf-domain="{}""#, state.prod_url));
 
