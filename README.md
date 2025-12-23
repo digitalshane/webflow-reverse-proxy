@@ -10,4 +10,4 @@ The fatest way to deploy would be on Railway.com.
 
 If you want to hire me to deploy this for you, reach out [here](https://www.wakingdigital.com/contact)
 
-More details coming soon.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
