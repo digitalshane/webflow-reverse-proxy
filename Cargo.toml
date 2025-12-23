@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate"] }
 tower-http = { version = "0.5", features = ["cors"] }
 http-body-util = "0.1"
+dotenvy = "0.15"
+regex = "1"

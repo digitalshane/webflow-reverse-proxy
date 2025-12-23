@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use http_body_util::BodyExt;
+use regex::Regex;
 use reqwest::Client;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -15,16 +16,35 @@ use tower_http::cors::CorsLayer;
 struct AppState {
     client: Client,
     webflow_url: String,
+    prod_url: String,
 }
 
 #[tokio::main]
 async fn main() {
-    // Your Webflow site URL
-    let webflow_url: String = "https://your-site.webflow.io".to_string();
+    // Load .env file
+    dotenvy::dotenv().ok();
 
-    let state: AppState = AppState {
+    // Your Webflow site URL
+    let webflow_url: String = match std::env::var("WEBFLOW_STAGING_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            eprintln!("Error: WEBFLOW_STAGING_URL environment variable is not set");
+            std::process::exit(1);
+        }
+    };
+
+    let prod_url: String = match std::env::var("PROD_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            eprintln!("Error: PROD_URL environment variable is not set");
+            std::process::exit(1);
+        }
+    };
+
+    let state = AppState {
         client: Client::new(),
         webflow_url,
+        prod_url,
     };
 
     let app: Router = Router::new()
@@ -96,9 +116,10 @@ async fn proxy_handler(
     for (name, value) in response.headers().iter() {
         let name_str: String = name.as_str().to_lowercase();
         // Skip headers that could cause issues
+        // Note: reqwest auto-decompresses, so we must skip content-encoding
         if !matches!(
             name_str.as_str(),
-            "transfer-encoding" | "content-length" | "connection"
+            "transfer-encoding" | "content-length" | "connection" | "content-encoding"
         ) {
             resp_builder = resp_builder.header(name, value);
         }
@@ -119,11 +140,12 @@ async fn proxy_handler(
 
     let modified_body: Vec<u8> = if content_type.contains("text/html") {
         let html: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&body_bytes);
-        let modified: String = html.replace(
-            "</head>",
-            r#"<script>console.log('Injected by proxy!');</script></head>"#,
-        );
-        modified.into_bytes()
+
+        // Replace data-wf-domain attribute value with PROD_URL
+        let wf_domain_re: Regex = Regex::new(r#"data-wf-domain="[^"]*""#).unwrap();
+        let modified: std::borrow::Cow<'_, str> = wf_domain_re.replace_all(&html, format!(r#"data-wf-domain="{}""#, state.prod_url));
+
+        modified.into_owned().into_bytes()
     } else {
         body_bytes.to_vec()
     };
